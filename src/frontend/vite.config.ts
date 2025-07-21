@@ -14,6 +14,7 @@ export default defineConfig({
     emptyOutDir: true,
     manifest: true,
     cssCodeSplit: false,
+    sourcemap:true,
     rollupOptions: {
       input: {
         main: "./src/main.tsx",

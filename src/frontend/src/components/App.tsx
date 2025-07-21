@@ -20,8 +20,9 @@ const App: React.FC = () => {
   useEffect(() => {
     const fetchAgentDetails = async () => {
       try {
-        const response = await fetch("/agent", {
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/agent`, {
           method: "GET",
+          mode: "cors",
           headers: {
             "Content-Type": "application/json",
           },

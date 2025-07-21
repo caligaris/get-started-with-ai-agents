@@ -25,7 +25,7 @@ export function BuiltWithBadge({
   useEffect(() => {
     const fetchAzureConfig = async () => {
       try {
-        const response = await fetch("/config/azure");
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/config/azure`);
         if (response.ok) {
           const config = await response.json();
           setAzureConfig(config);

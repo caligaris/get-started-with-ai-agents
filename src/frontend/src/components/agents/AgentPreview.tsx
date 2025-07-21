@@ -50,6 +50,9 @@ interface IAnnotation {
   text: string;
   start_index: number;
   end_index: number;
+  url_citation: {
+    url: string;
+  };
 }
 
 const preprocessContent = (
@@ -64,7 +67,7 @@ const preprocessContent = (
       .forEach((annotation) => {
         // If there's a file_name, show it (wrapped in brackets), otherwise fall back to annotation.text.
         const linkText = annotation.file_name
-          ? `[${annotation.file_name}]`
+          ? ` [${annotation.file_name}](${annotation.url_citation.url})`
           : annotation.text;
 
         content =
@@ -84,7 +87,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
 
   const loadChatHistory = async () => {
     try {
-      const response = await fetch("/chat/history", {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/chat/history`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -119,7 +122,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
               role: "assistant", // Assuming 'assistant' role for non-user
               isAnswer: true, // Assuming this property for assistant messages
               more: { time: entry.created_at }, // Or use timestamp from history if available
-              // annotations: entry.annotations, // If you plan to use annotations
+              annotations: entry.annotations, // If you plan to use annotations
             });
           }
         }
@@ -184,7 +187,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
       // and if your backend is on the same domain or properly configured for cross-site cookies.
 
       setIsResponding(true);
-      const response = await fetch("/chat", {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -313,8 +316,8 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
               }
 
               if (data.type === "completed_message") {
-                clearAssistantMessage(chatItem);
-                accumulatedContent = data.content;
+                //clearAssistantMessage(chatItem);
+                accumulatedContent = preprocessContent(data.content, data.annotations);
                 annotations = data.annotations;
                 isStreaming = false;
                 console.log(
@@ -324,7 +327,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
 
                 setIsResponding(false);
               } else {
-                accumulatedContent += data.content;
+                accumulatedContent += preprocessContent(data.content, data.annotations);
                 console.log(
                   "[ChatClient] Received streaming chunk:",
                   data.content
@@ -401,11 +404,11 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
     }
   };
 
-  const clearAssistantMessage = (chatItem: IChatItem) => {
-    if (chatItem) {
-      chatItem.content = "";
-    }
-  };
+  // const clearAssistantMessage = (chatItem: IChatItem) => {
+  //   if (chatItem) {
+  //     chatItem.content = "";
+  //   }
+  // };
   const menuItems = [
     {
       key: "settings",

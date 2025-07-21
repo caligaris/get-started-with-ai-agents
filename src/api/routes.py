@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import time
 from typing import AsyncGenerator, Optional, Dict
 
 import fastapi
@@ -22,7 +23,8 @@ from azure.ai.agents.models import (
     ThreadMessage,
     ThreadRun,
     AsyncAgentEventHandler,
-    RunStep
+    RunStep,
+    MessageRole
 )
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
@@ -223,6 +225,60 @@ async def get_result(
             yield serialize_sse_event({'type': "error", 'message': str(e)})
 
 
+async def get_result_polling(
+    request: Request, 
+    thread_id: str, 
+    agent_id: str, 
+    ai_project: AIProjectClient,
+    app_insight_conn_str: Optional[str], 
+    carrier: Dict[str, str]
+) -> AsyncGenerator[str, None]:
+    ctx = TraceContextTextMapPropagator().extract(carrier=carrier)
+    with tracer.start_as_current_span('get_result_polling', context=ctx):
+        logger.info(f"get_result_polling invoked for thread_id={thread_id} and agent_id={agent_id}")
+        try:
+            agent_client = ai_project.agents
+            run = await agent_client.runs.create(thread_id=thread_id, agent_id=agent_id)
+            logger.info(f"Created run with ID: {run.id}")
+            last_message_id = None
+            while run.status in ("queued", "in_progress"):
+                time.sleep(1)  # Poll every second
+                run = await agent_client.runs.get(thread_id=thread_id, run_id=run.id)
+                response = await agent_client.messages.get_last_message_by_role(
+                    thread_id=thread_id,
+                    role=MessageRole.AGENT,
+                )
+                if not response or not response.text_messages or response.id == last_message_id:
+                    # No new content, continue polling
+                    continue
+                last_message_id = response.id
+                stream_data = await get_message_and_annotations(agent_client, response)
+                stream_data['role'] = response.role
+                stream_data["type"] = "message"
+                logger.info(f"Yielding message with ID: {response.id} and content: {stream_data['content']}")
+                yield serialize_sse_event(stream_data)
+            
+            if run.status == "completed":
+                logger.info(f"Run completed with ID: {run.id}")
+                run_agent_evaluation(run.thread_id, run.id, ai_project, app_insight_conn_str)
+                final_message = await agent_client.messages.get_last_message_by_role(
+                    thread_id=thread_id,
+                    role=MessageRole.AGENT,
+                )
+                stream_data = await get_message_and_annotations(agent_client, final_message)
+                stream_data['role'] = final_message.role
+                stream_data["type"] = "completed_message"
+                logger.info(f"Yielding final message with ID: {final_message.id} and content: {stream_data['content']}")
+                yield serialize_sse_event(stream_data)
+
+                stream_data = {'type': "stream_end"}
+                yield serialize_sse_event(stream_data)
+
+
+        except Exception as e:
+            logger.exception(f"Exception in get_result_polling: {e}")
+            yield serialize_sse_event({'type': "error", 'message': str(e)})
+
 @router.get("/chat/history")
 async def history(
     request: Request,
@@ -343,7 +399,7 @@ async def chat(
         logger.info(f"Starting streaming response for thread ID {thread_id}")
 
         # Create the streaming response using the generator.
-        response = StreamingResponse(get_result(request, thread_id, agent_id, ai_project, app_insights_conn_str, carrier), headers=headers)
+        response = StreamingResponse(get_result_polling(request, thread_id, agent_id, ai_project, app_insights_conn_str, carrier), headers=headers)
 
         # Update cookies to persist the thread and agent IDs.
         response.set_cookie("thread_id", thread_id)

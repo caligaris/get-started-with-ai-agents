@@ -3,6 +3,7 @@
 
 import contextlib
 import os
+import sys
 
 from azure.ai.projects.aio import AIProjectClient
 from azure.identity import DefaultAzureCredential
@@ -11,6 +12,7 @@ import fastapi
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from logging_config import configure_logging
@@ -44,7 +46,10 @@ async def lifespan(app: fastapi.FastAPI):
                 logger.error("Enable it via the 'Tracing' tab in your AI Foundry project page.")
                 exit()
             else:
+                os.environ["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] = "true" # Enable content recording for telemetry
                 from azure.monitor.opentelemetry import configure_azure_monitor
+                from azure.ai.projects import enable_telemetry
+                enable_telemetry(destination=sys.stdout)
                 configure_azure_monitor(connection_string=application_insights_connection_string)
                 app.state.application_insights_connection_string = application_insights_connection_string
                 logger.info("Configured Application Insights for tracing.")
@@ -116,6 +121,18 @@ def create_app():
 
     directory = os.path.join(os.path.dirname(__file__), "static")
     app = fastapi.FastAPI(lifespan=lifespan)
+
+    if enable_trace:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        FastAPIInstrumentor.instrument_app(app)  # Instrument FastAPI for OpenTelemetry
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Adjust this to your frontend's origin in production
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.mount("/static", StaticFiles(directory=directory), name="static")
     
     # Mount React static files

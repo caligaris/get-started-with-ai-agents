@@ -1,9 +1,10 @@
 import { Button, Spinner } from "@fluentui/react-components";
-import { bundleIcon, DeleteFilled, DeleteRegular } from "@fluentui/react-icons";
+import { bundleIcon, DeleteFilled, DeleteRegular, GlobeSearchRegular } from "@fluentui/react-icons";
 import { CopilotMessageV2 as CopilotMessage } from "@fluentui-copilot/react-copilot-chat";
 import {
   ReferenceListV2 as ReferenceList,
   ReferenceOverflowButton,
+  ReferenceV2 as Reference
 } from "@fluentui-copilot/react-reference";
 import { Suspense } from "react";
 
@@ -27,9 +28,20 @@ export function AssistantMessage({
   const hasAnnotations = message.annotations && message.annotations.length > 0;
   const references = hasAnnotations
     ? message.annotations?.map((annotation, index) => (
-        <div key={index} className="reference-item">
-          {annotation.text || annotation.file_name}
-        </div>
+        <Reference 
+          key={index} className="reference-item"
+          citation={index + 1}
+          graphic={<GlobeSearchRegular />}
+          onClick={() => {
+            // Open the file in a new tab or perform any action
+            window.open(annotation.url_citation.url, "_blank");
+          }}
+        >
+          {annotation.file_name}
+        </Reference>
+        // <div key={index} className="reference-item">
+        //   {annotation.text || annotation.file_name}
+        // </div>
       ))
     : [];
 

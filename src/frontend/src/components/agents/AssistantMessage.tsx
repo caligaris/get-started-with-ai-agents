@@ -25,7 +25,8 @@ export function AssistantMessage({
   showUsageInfo,
   onDelete,
 }: IAssistantMessageProps): React.JSX.Element {
-  const hasAnnotations = message.annotations && message.annotations.length > 0;
+  //const hasAnnotations = message.annotations && message.annotations.length > 0;
+  const hasAnnotations = false; // Temporarily disable annotations
   const references = hasAnnotations
     ? message.annotations?.map((annotation, index) => (
         <Reference 

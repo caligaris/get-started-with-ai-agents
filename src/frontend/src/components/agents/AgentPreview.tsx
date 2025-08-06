@@ -6,14 +6,14 @@ import {
   Spinner,
   Title3,
 } from "@fluentui/react-components";
-import { ChatRegular, MoreHorizontalRegular } from "@fluentui/react-icons";
+import { ChatRegular, MoreHorizontalRegular, ChatHistoryRegular } from "@fluentui/react-icons";
 import clsx from "clsx";
 
 import { AgentIcon } from "./AgentIcon";
 import { SettingsPanel } from "../core/SettingsPanel";
 import { AgentPreviewChatBot } from "./AgentPreviewChatBot";
 import { MenuButton } from "../core/MenuButton/MenuButton";
-import { IChatItem } from "./chatbot/types";
+import { IChatItem, IThreadItem } from "./chatbot/types";
 import { Waves } from "./Waves";
 import { BuiltWithBadge } from "./BuiltWithBadge";
 
@@ -84,10 +84,11 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
   const [messageList, setMessageList] = useState<IChatItem[]>([]);
   const [isResponding, setIsResponding] = useState(false);
   const [isLoadingChatHistory, setIsLoadingChatHistory] = useState(true);
+  const [threadList, setThreadList] = useState<IThreadItem[]>([]);
 
   const loadChatHistory = async () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/chat/history`, {
+      const response = await fetch(`/chat/history`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -101,6 +102,11 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
           content: string;
           created_at: string;
           annotations?: IAnnotation[];
+          usageInfo?: {
+            prompt_tokens: number;
+            completion_tokens: number;
+            total_tokens: number;
+          };
         }> = await response.json();
 
         // It's generally better to build the new list and set state once
@@ -123,6 +129,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
               isAnswer: true, // Assuming this property for assistant messages
               more: { time: entry.created_at }, // Or use timestamp from history if available
               annotations: entry.annotations, // If you plan to use annotations
+              usageInfo: entry.usageInfo || undefined,
             });
           }
         }
@@ -161,6 +168,14 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
     deleteAllCookies();
   };
 
+  const setThread = (threadId: string) => {
+    setMessageList([]);
+    document.cookie = `thread_id=${threadId}; path=/;`;
+    //reload chat history
+    setIsLoadingChatHistory(true);
+    loadChatHistory();
+  }
+
   const deleteAllCookies = (): void => {
     document.cookie.split(";").forEach((cookieStr: string) => {
       const trimmedCookieStr = cookieStr.trim();
@@ -187,7 +202,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
       // and if your backend is on the same domain or properly configured for cross-site cookies.
 
       setIsResponding(true);
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/chat`, {
+      const response = await fetch(`/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -228,6 +243,100 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
       } else {
         console.error("[ChatClient] Fetch failed:", error);
       }
+    }
+  };
+
+  const handleThreads = (
+    stream: ReadableStream<Uint8Array<ArrayBufferLike>>
+  ) => {
+    // Implementation for handling thread messages
+    let buffer = "";
+
+    // Create a reader for the SSE stream
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+
+    const readStream = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log("[Threads] SSE stream ended by server.");
+          break;
+        }
+        // Convert the incoming Uint8Array to text
+        const textChunk = decoder.decode(value, { stream: true });
+        console.log("[Threads] Raw chunk from stream:", textChunk);
+
+        buffer += textChunk;
+        let boundary = buffer.indexOf("\n");
+        // We process line-by-line.
+
+        while (boundary !== -1) {
+          const chunk = buffer.slice(0, boundary).trim();
+          buffer = buffer.slice(boundary + 1);
+          console.log("[Threads] SSE line:", chunk); // log each line we extract
+          if (chunk.startsWith("data: ")) {
+            // Attempt to parse JSON
+            const jsonStr = chunk.slice(6).trim();
+            let data;
+            try {
+              data = JSON.parse(jsonStr);
+            } catch (err) {
+              console.error("[Threads] Failed to parse JSON:", jsonStr, err);
+              boundary = buffer.indexOf("\n");
+              continue;
+            }
+
+            console.log("[Threads] Parsed SSE event:", data);
+            if (data.error) {
+              console.error("[Threads] Error in SSE event:", data.error);
+              return;
+            }
+
+            setThreadList((prev) => [
+              ...prev,
+              data as IThreadItem,
+            ]);
+            console.log("[Threads] Updated thread list:", data);
+          }
+          boundary = buffer.indexOf("\n");
+        }
+
+        boundary = buffer.indexOf("\n");
+      }
+    };
+
+    // Catch errors from the stream reading process
+    readStream().catch((error) => {
+      console.error("[Threads] Stream reading failed:", error);
+    });
+  };
+
+  const getThreads = async () => {
+    try {
+      if (threadList.length > 0) {
+        console.log("[Threads] Threads already loaded, skipping fetch.");
+        return;
+      }
+      const response = await fetch(`/threads`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch threads");
+      }
+
+      if (!response.body) {
+        throw new Error("ReadableStream not supported or response.body is null");
+      }
+      console.log("[Threads] Starting to handle threads response...");
+      handleThreads(response.body);
+    } catch (error) {
+      console.error("[Threads] Error fetching threads:", error);
     }
   };
 
@@ -319,6 +428,9 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
                 //clearAssistantMessage(chatItem);
                 accumulatedContent = preprocessContent(data.content, data.annotations);
                 annotations = data.annotations;
+                if (data.usageInfo) {
+                  chatItem.usageInfo = data.usageInfo;
+                }
                 isStreaming = false;
                 console.log(
                   "[ChatClient] Received completed message:",
@@ -506,6 +618,30 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
           >
             New Chat
           </Button>
+          <MenuButton
+            menuButtonText="Chat History"
+            menuPopoverProps={
+              { className: styles.chatHistoryMenu }
+            }
+            menuItems={threadList.map((thread) => ({
+              key: thread.id,
+              children: (
+                <div className={styles.threadItem}>
+                  <Caption1 className={styles.threadTitle}>
+                    {thread.first_message}
+                  </Caption1>
+                </div>
+              ),
+              onClick: () => {setThread(thread.id);},
+            }))}
+            menuButtonProps={{
+              onClick: () => {getThreads();},
+              "aria-label": "Chat History",
+              appearance: "subtle",
+              icon: <ChatHistoryRegular aria-hidden={true} />,
+            }}
+            
+          />
           <MenuButton
             menuButtonText=""
             menuItems={menuItems}

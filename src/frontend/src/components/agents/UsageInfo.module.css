@@ -43,11 +43,17 @@
   z-index: 100;
 }
 
-.infoButton:focus + .usageDetails,
+/* .usageSummary:focus + .usageDetails,
+.usageSummary:hover + .usageDetails,
+.usageDetails:hover {
+  display: block;
+} */
+
+/* .infoButton:focus + .usageDetails,
 .infoButton:hover + .usageDetails,
 .usageDetails:hover {
   display: block;
-}
+} */
 
 .detailsDivider {
   margin: 8px 0;

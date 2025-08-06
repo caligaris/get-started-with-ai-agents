@@ -19,6 +19,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from azure.ai.agents.aio import AgentsClient
 from azure.ai.agents.models import (
     Agent,
+    AgentThread,
     MessageDeltaChunk,
     ThreadMessage,
     ThreadRun,
@@ -268,6 +269,12 @@ async def get_result_polling(
                 stream_data = await get_message_and_annotations(agent_client, final_message)
                 stream_data['role'] = final_message.role
                 stream_data["type"] = "completed_message"
+                if run.usage:
+                    stream_data["usageInfo"] = {
+                        "completion_tokens": run.usage.completion_tokens,
+                        "prompt_tokens": run.usage.prompt_tokens,
+                        "total_tokens": run.usage.total_tokens
+                    }
                 logger.info(f"Yielding final message with ID: {final_message.id} and content: {stream_data['content']}")
                 yield serialize_sse_event(stream_data)
 
@@ -318,8 +325,27 @@ async def history(
             formatteded_message['role'] = message.role
             formatteded_message['created_at'] = message.created_at.astimezone().strftime("%m/%d/%y, %I:%M %p")
             content.append(formatteded_message)
-                
-                                        
+        
+        # Get all runs for the thread, then get the run details and append the usage properties.
+        run_ids = agent_client.runs.list(thread_id=thread_id)
+        total_usage = {
+            "completion_tokens": 0, 
+            "prompt_tokens": 0, 
+            "total_tokens": 0
+            }  # initialize with 0 values
+        async for run in run_ids:
+            run_details = await agent_client.runs.get(thread_id=thread_id, run_id=run.id)
+
+            # If completed, add the usage to the total_usage dict.
+            if run_details.status == "completed" and run_details.usage:
+                total_usage["completion_tokens"] += run_details.usage.completion_tokens
+                total_usage["prompt_tokens"] += run_details.usage.prompt_tokens
+                total_usage["total_tokens"] += run_details.usage.total_tokens
+
+        # Add the total usage to the last entry in the content list (if it exists).
+        if content:
+            content[0]["usageInfo"] = total_usage
+
         logger.info(f"List message, thread ID: {thread_id}")
         response = JSONResponse(content=content)
     
@@ -330,6 +356,89 @@ async def history(
     except Exception as e:
         logger.error(f"Error listing message: {e}")
         raise HTTPException(status_code=500, detail=f"Error list message: {e}")
+
+
+async def get_threads_polling(    
+    request: Request,
+    agent_id: str,
+    ai_project: AIProjectClient,
+    carrier: Dict[str, str],
+) -> AsyncGenerator[str, None]:
+    ctx = TraceContextTextMapPropagator().extract(carrier=carrier)
+    with tracer.start_as_current_span('get_threads_polling', context=ctx):
+        logger.info(f"get_threads_polling invoked for agent_id={agent_id}")
+        try:
+            agent_client = ai_project.agents
+            threads = agent_client.threads.list(
+                order="desc",
+                limit=15  # Limit to the last 15 threads
+                )
+            async for thread in threads:
+                thread: AgentThread  # Add this type annotation
+                # get first user message in the thread
+                first_message = None
+                messages = agent_client.messages.list(
+                    thread_id=thread.id,
+                    order="asc",
+                    limit=1,  # Limit to the first message
+                )
+
+                async for message in messages:
+                    first_message = message
+                    break  # Only need the first message for this purpose
+
+                if not first_message:
+                    logger.info(f"Thread {thread.id} has no messages, skipping")
+                    continue
+
+                # Extract first message content safely
+                first_message_text = ""
+                if first_message.content and len(first_message.content) > 0:
+                    first_message_text = first_message.content[0].text.value
+
+                thread_info = {
+                    "id": thread.id,
+                    "created_at": thread.created_at.astimezone().strftime("%m/%d/%y, %I:%M %p"),
+                    "first_message": first_message_text
+                }
+                logger.info(f"Yielding thread info: {thread_info}")
+                yield serialize_sse_event(thread_info)
+
+        except Exception as e:
+            logger.error(f"Error listing threads: {e}")
+            yield serialize_sse_event({'type': "error", 'message': str(e)})
+
+
+@router.get("/threads")
+async def get_threads(
+    request: Request,
+    ai_project: AIProjectClient = Depends(get_ai_project),
+    agent: Agent = Depends(get_agent),
+    _ = auth_dependency
+):
+    with tracer.start_as_current_span("get_threads"):
+        # Retrieve the thread ID from the cookies (if available).
+        thread_id = request.cookies.get('thread_id')
+        agent_id = request.cookies.get('agent_id')
+        carrier = {}
+        TraceContextTextMapPropagator().inject(carrier)
+
+        if not agent_id:
+            logger.error("No agent ID found in cookies, cannot fetch threads")
+            raise HTTPException(status_code=400, detail="No agent ID found in cookies") 
+        
+        response = StreamingResponse(
+            get_threads_polling(request, agent_id, ai_project, carrier),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "text/event-stream"
+            }
+        )
+
+        return response
+
 
 @router.get("/agent")
 async def get_chat_agent(

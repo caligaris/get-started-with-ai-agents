@@ -261,3 +261,8 @@
   align-items: center;
   width: 100%;
 }
+
+.chatHistoryMenu {
+  max-height: 90vh;
+  overflow-y: auto;
+}

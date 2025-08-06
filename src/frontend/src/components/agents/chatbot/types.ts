@@ -75,3 +75,9 @@ export interface AgentPreviewChatBotProps {
   agentLogo?: string;
   chatContext: ChatContextType;
 }
+
+export interface IThreadItem {
+  id: string;
+  created_at: string;
+  first_message: string;
+}

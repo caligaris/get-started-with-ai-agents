@@ -45,6 +45,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         onMessageSend(inputText ?? "");
       }}
       placeholderValue="Type your message here..."
+      maxLength={50000}
     >
       <ImperativeControlPlugin ref={controlRef} />
     </ChatInputFluent>

@@ -2,3 +2,4 @@
 .venv/
 **/*.pyc
 frontend/node_modules
+*.local

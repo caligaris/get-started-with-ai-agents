@@ -4,6 +4,8 @@
 import contextlib
 import os
 import sys
+import token
+import jwt as pyjwt
 
 from azure.ai.projects.aio import AIProjectClient
 from azure.identity import DefaultAzureCredential
@@ -133,6 +135,40 @@ def create_app():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    auth_required = os.getenv("AUTHORIZED_AAD_GROUPS", "") != ""
+    if auth_required:
+        logger.info("Authorization is enabled.")
+        # Authorization middleware
+        @app.middleware("http")
+        async def authorization_middleware(request: Request, call_next):
+            # access_token = request.headers.get("x-ms-token-aad-access-token")
+            id_token = request.headers.get("x-ms-token-aad-id-token")
+            if not id_token:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized"}
+                )
+
+            # logger.info(f"x-ms-token-aad-access-token:{access_token}")
+            # logger.info(f"x-ms-token-aad-id-token:{id_token}")
+
+            # decode without verifying signature; still returns claims and PyJWT will still
+            # raise if token is expired when options don't disable exp check
+            claims = pyjwt.decode(id_token, options={"verify_signature": False})
+            claims_groups = claims.get("groups", [])
+            authorized_groups = set(claims_groups)
+            required_groups = set(os.getenv("AUTHORIZED_AAD_GROUPS", "").split(","))
+
+            if not authorized_groups.intersection(required_groups):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Forbidden"}
+                )
+
+            response = await call_next(request)
+            return response
+
     app.mount("/static", StaticFiles(directory=directory), name="static")
     
     # Mount React static files

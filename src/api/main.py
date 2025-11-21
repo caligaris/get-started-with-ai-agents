@@ -9,6 +9,7 @@ import jwt as pyjwt
 
 from azure.ai.projects.aio import AIProjectClient
 from azure.identity import DefaultAzureCredential
+from azure.core.credentials import AccessToken
 
 import fastapi
 from fastapi.staticfiles import StaticFiles
@@ -22,12 +23,27 @@ from logging_config import configure_logging
 enable_trace = False
 logger = None
 
+# class SimpleTokenCredential:
+#     def __init__(self, token, expires_on):
+#         self._token = token
+#         self._expires_on = expires_on
+
+#     def get_token(self, *scopes, **kwargs):
+#         return AccessToken(self._token, self._expires_on)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     agent = None
 
     proj_endpoint = os.environ.get("AZURE_EXISTING_AIPROJECT_ENDPOINT")
     agent_id = os.environ.get("AZURE_EXISTING_AGENT_ID")
+    auth_required = os.getenv("AUTHORIZED_AAD_GROUPS", "") != ""
+
+    app.state.proj_endpoint = proj_endpoint
+    app.state.agent_id = agent_id
+    app.state.auth_required = auth_required
+
     try:
         ai_project = AIProjectClient(
             credential=DefaultAzureCredential(exclude_shared_token_cache_credential=True),
@@ -142,7 +158,7 @@ def create_app():
         # Authorization middleware
         @app.middleware("http")
         async def authorization_middleware(request: Request, call_next):
-            # access_token = request.headers.get("x-ms-token-aad-access-token")
+            access_token = request.headers.get("x-ms-token-aad-access-token")
             id_token = request.headers.get("x-ms-token-aad-id-token")
             if not id_token:
                 return JSONResponse(
@@ -150,8 +166,8 @@ def create_app():
                     content={"detail": "Unauthorized"}
                 )
 
-            # logger.info(f"x-ms-token-aad-access-token:{access_token}")
-            # logger.info(f"x-ms-token-aad-id-token:{id_token}")
+            logger.info(f"x-ms-token-aad-access-token:{access_token}")
+            logger.info(f"x-ms-token-aad-id-token:{id_token}")
 
             # decode without verifying signature; still returns claims and PyJWT will still
             # raise if token is expired when options don't disable exp check
@@ -165,6 +181,23 @@ def create_app():
                     status_code=403,
                     content={"detail": "Forbidden"}
                 )
+
+            # When authentication is enabled it uses the user's access token to create the AIProjectClient
+            decoded_token = pyjwt.decode(access_token, options={"verify_signature": False})
+            request.state.decoded_token = decoded_token
+            
+            # simple_token_credential = SimpleTokenCredential(token=access_token, expires_on=decoded_token["exp"])
+            # user_ai_project = AIProjectClient(
+            #     credential=simple_token_credential,
+            #     endpoint=request.app.state.proj_endpoint,
+            #     api_version = "2025-05-15-preview" # Evaluations yet not supported on stable (api_version="2025-05-01")
+            # )
+            # logger.info("Created User AIProjectClient")
+            # request.state.user_ai_project = user_ai_project
+
+            # # When authentication is enabled it is assumed the Agent is already created
+            # user_agent = user_ai_project.agents.get_agent(request.app.state.agent_id)
+            # request.state.user_agent = user_agent
 
             response = await call_next(request)
             return response

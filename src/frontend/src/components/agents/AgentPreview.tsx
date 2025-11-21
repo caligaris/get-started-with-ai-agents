@@ -1,4 +1,4 @@
-import { ReactNode, useState, useMemo, useEffect } from "react";
+import { ReactNode, useState, useMemo, useEffect, useRef } from "react";
 import {
   Body1,
   Button,
@@ -85,6 +85,11 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
   const [isResponding, setIsResponding] = useState(false);
   const [isLoadingChatHistory, setIsLoadingChatHistory] = useState(true);
   const [threadList, setThreadList] = useState<IThreadItem[]>([]);
+
+  // --- New: guards for one-time thread loading ---
+  const threadsLoadingRef = useRef(false);
+  const [threadsLoaded, setThreadsLoaded] = useState(false);
+  const threadsReaderRef = useRef<ReadableStreamDefaultReader | null>(null);
 
   const loadChatHistory = async () => {
     try {
@@ -246,99 +251,92 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
     }
   };
 
+  // --- Modified: handleThreads now stores reader for cleanup ---
   const handleThreads = (
-    stream: ReadableStream<Uint8Array<ArrayBufferLike>>
+    stream: ReadableStream<Uint8Array>
   ) => {
-    // Implementation for handling thread messages
     let buffer = "";
-
-    // Create a reader for the SSE stream
     const reader = stream.getReader();
+    threadsReaderRef.current = reader; // store for cleanup
     const decoder = new TextDecoder();
 
     const readStream = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          console.log("[Threads] SSE stream ended by server.");
-          break;
-        }
-        // Convert the incoming Uint8Array to text
-        const textChunk = decoder.decode(value, { stream: true });
-        console.log("[Threads] Raw chunk from stream:", textChunk);
-
-        buffer += textChunk;
-        let boundary = buffer.indexOf("\n");
-        // We process line-by-line.
-
-        while (boundary !== -1) {
-          const chunk = buffer.slice(0, boundary).trim();
-          buffer = buffer.slice(boundary + 1);
-          console.log("[Threads] SSE line:", chunk); // log each line we extract
-          if (chunk.startsWith("data: ")) {
-            // Attempt to parse JSON
-            const jsonStr = chunk.slice(6).trim();
-            let data;
-            try {
-              data = JSON.parse(jsonStr);
-            } catch (err) {
-              console.error("[Threads] Failed to parse JSON:", jsonStr, err);
-              boundary = buffer.indexOf("\n");
-              continue;
-            }
-
-            console.log("[Threads] Parsed SSE event:", data);
-            if (data.error) {
-              console.error("[Threads] Error in SSE event:", data.error);
-              return;
-            }
-
-            setThreadList((prev) => [
-              ...prev,
-              data as IThreadItem,
-            ]);
-            console.log("[Threads] Updated thread list:", data);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            console.log("[Threads] SSE stream ended by server.");
+            break;
           }
-          boundary = buffer.indexOf("\n");
+          const textChunk = decoder.decode(value, { stream: true });
+          buffer += textChunk;
+          let boundary = buffer.indexOf("\n");
+          while (boundary !== -1) {
+            const chunk = buffer.slice(0, boundary).trim();
+            buffer = buffer.slice(boundary + 1);
+            if (chunk.startsWith("data: ")) {
+              const jsonStr = chunk.slice(6).trim();
+              let data;
+              try {
+                data = JSON.parse(jsonStr);
+              } catch (err) {
+                boundary = buffer.indexOf("\n");
+                continue;
+              }
+              if (data.error) return;
+              setThreadList((prev) => [...prev, data as IThreadItem]);
+            }
+            boundary = buffer.indexOf("\n");
+          }
         }
-
-        boundary = buffer.indexOf("\n");
+      } catch (err) {
+        if ((err as any).name === "AbortError") {
+          console.log("[Threads] Reader aborted.");
+        } else {
+          console.error("[Threads] Stream reading failed:", err);
+        }
       }
     };
-
-    // Catch errors from the stream reading process
-    readStream().catch((error) => {
-      console.error("[Threads] Stream reading failed:", error);
-    });
+    readStream();
   };
 
+  // --- Modified: getThreads with guards ---
   const getThreads = async () => {
+    if (threadsLoaded || threadsLoadingRef.current) {
+      return;
+    }
+    threadsLoadingRef.current = true;
     try {
-      if (threadList.length > 0) {
-        console.log("[Threads] Threads already loaded, skipping fetch.");
-        return;
-      }
       const response = await fetch(`/threads`, {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
       });
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch threads");
-      }
-
-      if (!response.body) {
-        throw new Error("ReadableStream not supported or response.body is null");
-      }
-      console.log("[Threads] Starting to handle threads response...");
+      if (!response.ok) throw new Error("Failed to fetch threads");
+      if (!response.body) throw new Error("ReadableStream not supported or response.body is null");
+      setThreadsLoaded(true);
       handleThreads(response.body);
     } catch (error) {
-      console.error("[Threads] Error fetching threads:", error);
+      setThreadsLoaded(false);
+    } finally {
+      threadsLoadingRef.current = false;
     }
   };
+
+  // --- New: useEffect to load threads once on mount, with cleanup ---
+  useEffect(() => {
+    // let isMounted = true;
+    getThreads();
+    return () => {
+      // isMounted = false;
+      // Clean up streaming reader if still open
+      if (threadsReaderRef.current) {
+        threadsReaderRef.current.cancel();
+        threadsReaderRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleMessages = (
     stream: ReadableStream<Uint8Array<ArrayBufferLike>>
@@ -635,7 +633,6 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
               onClick: () => {setThread(thread.id);},
             }))}
             menuButtonProps={{
-              onClick: () => {getThreads();},
               "aria-label": "Chat History",
               appearance: "subtle",
               icon: <ChatHistoryRegular aria-hidden={true} />,

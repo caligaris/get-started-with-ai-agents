@@ -85,8 +85,8 @@ auth_dependency = Depends(authenticate) if basic_auth else None
 def get_ai_project(request: Request) -> AIProjectClient:
     return request.app.state.ai_project
 
-def get_agent_client(request: Request) -> AgentsClient:
-    return request.app.state.agent_client
+# def get_agent_client(request: Request) -> AgentsClient:
+#     return request.app.state.agent_client
 
 def get_agent(request: Request) -> Agent:
     return request.app.state.agent
@@ -373,8 +373,17 @@ async def get_threads_polling(
                 order="desc",
                 limit=15  # Limit to the last 15 threads
                 )
+
             async for thread in threads:
                 thread: AgentThread  # Add this type annotation
+
+                # Check if the thread is owned by the user only if auth is required
+                # if (
+                #     request.app.state.auth_required 
+                #     and thread.metadata.get("owner") != request.state.decoded_token["upn"]
+                # ):
+                #     continue
+                
                 # get first user message in the thread
                 first_message = None
                 messages = agent_client.messages.list(
@@ -470,7 +479,9 @@ async def chat(
                 thread = await agent_client.threads.get(thread_id)
             else:
                 logger.info("Creating a new thread")
-                thread = await agent_client.threads.create()
+                thread = await agent_client.threads.create(
+                    # metadata={"owner": request.state.decoded_token["upn"]}
+                )
         except Exception as e:
             logger.error(f"Error handling thread: {e}")
             raise HTTPException(status_code=400, detail=f"Error handling thread: {e}")
